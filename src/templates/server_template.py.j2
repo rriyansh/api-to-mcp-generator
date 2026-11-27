@@ -1,0 +1,55 @@
+import os
+import re
+import requests
+from typing import Optional
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+mcp = FastMCP({{ tool_name | tojson }})
+
+API_URL = {{ api_url | tojson }}
+HEADERS = {{ headers | tojson }}
+
+
+def resolve_value(value):
+    def replace(match):
+        return os.getenv(match.group(1), "")
+
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", replace, value)
+
+
+def clean_query(values):
+    cleaned = {}
+    for key, value in values.items():
+        if isinstance(value, bool):
+            cleaned[key] = str(value).lower()
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
+@mcp.tool(name={{ tool_name | tojson }}, description={{ description | tojson }})
+def {{ tool_name }}({% for parameter in parameters %}{{ parameter.name }}: {% if parameter.required %}{{ parameter.python_type }}{% else %}Optional[{{ parameter.python_type }}] = None{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}) -> str:
+    _query = {}
+    _body = {}
+{% for parameter in parameters %}
+    if {{ parameter.name }} is not None:
+        _{{ parameter.location }}[{{ parameter.name | tojson }}] = {{ parameter.name }}
+{% endfor %}
+    _headers = {key: resolve_value(value) for key, value in HEADERS.items()}
+    try:
+{% if http_method == "GET" %}
+        response = requests.get(API_URL, headers=_headers, params=clean_query(_query), timeout=30)
+{% else %}
+        response = requests.post(API_URL, headers=_headers, params=clean_query(_query), json=_body or None, timeout=30)
+{% endif %}
+        response.raise_for_status()
+    except requests.RequestException as error:
+        return f"Request failed: {error}"
+    return response.text
+
+
+if __name__ == "__main__":
+    mcp.run()
