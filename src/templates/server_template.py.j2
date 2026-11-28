@@ -1,23 +1,35 @@
 import os
 import re
 import requests
-from typing import Optional
+from typing import Annotated, Optional
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-mcp = FastMCP({{ tool_name | tojson }})
+mcp = FastMCP({{ server_name | tojson }})
 
-API_URL = {{ api_url | tojson }}
-HEADERS = {{ headers | tojson }}
+REQUEST_TIMEOUT = 30
+MAX_RESPONSE_CHARS = 20000
+PLACEHOLDER = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
-def resolve_value(value):
+def resolve_all(values):
+    missing = []
+
     def replace(match):
-        return os.getenv(match.group(1), "")
+        name = match.group(1)
+        found = os.getenv(name)
+        if not found:
+            missing.append(name)
+            return ""
+        return found
 
-    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", replace, value)
+    resolved = {}
+    for key, value in values.items():
+        resolved[key] = PLACEHOLDER.sub(replace, value)
+    return resolved, missing
 
 
 def clean_query(values):
@@ -30,26 +42,43 @@ def clean_query(values):
     return cleaned
 
 
-@mcp.tool(name={{ tool_name | tojson }}, description={{ description | tojson }})
-def {{ tool_name }}({% for parameter in parameters %}{{ parameter.name }}: {% if parameter.required %}{{ parameter.python_type }}{% else %}Optional[{{ parameter.python_type }}] = None{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}) -> str:
+def send_request(method, url, headers, auth_query, query, body):
+    resolved_headers, missing_headers = resolve_all(headers)
+    resolved_auth, missing_auth = resolve_all(auth_query)
+    missing = sorted(set(missing_headers + missing_auth))
+    if missing:
+        return "Missing environment variables: " + ", ".join(missing) + ". Add them to the .env file that sits next to server.py."
+    params = clean_query(query)
+    params.update(resolved_auth)
+    try:
+        if method == "GET":
+            response = requests.get(url, headers=resolved_headers, params=params, timeout=REQUEST_TIMEOUT)
+        else:
+            response = requests.post(url, headers=resolved_headers, params=params, json=body or None, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+    except requests.HTTPError as error:
+        status = error.response.status_code
+        return f"The API returned HTTP {status}: {error.response.text[:300]}"
+    except requests.RequestException as error:
+        return f"Request failed ({type(error).__name__})."
+    text = response.text
+    if len(text) > MAX_RESPONSE_CHARS:
+        return text[:MAX_RESPONSE_CHARS] + "\n[Response was cut because it is too long]"
+    return text
+
+
+{% for tool in tools %}
+@mcp.tool(name={{ tool.name | tojson }}, description={{ tool.description | tojson }})
+def {{ tool.name }}({% for parameter in tool.parameters %}{{ parameter.name }}: Annotated[{% if parameter.required %}{{ parameter.python_type }}{% else %}Optional[{{ parameter.python_type }}]{% endif %}, Field(description={{ parameter.description | tojson }})]{% if not parameter.required %} = None{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}) -> str:
     _query = {}
     _body = {}
-{% for parameter in parameters %}
+{% for parameter in tool.parameters %}
     if {{ parameter.name }} is not None:
         _{{ parameter.location }}[{{ parameter.name | tojson }}] = {{ parameter.name }}
 {% endfor %}
-    _headers = {key: resolve_value(value) for key, value in HEADERS.items()}
-    try:
-{% if http_method == "GET" %}
-        response = requests.get(API_URL, headers=_headers, params=clean_query(_query), timeout=30)
-{% else %}
-        response = requests.post(API_URL, headers=_headers, params=clean_query(_query), json=_body or None, timeout=30)
-{% endif %}
-        response.raise_for_status()
-    except requests.RequestException as error:
-        return f"Request failed: {error}"
-    return response.text
+    return send_request({{ tool.http_method | tojson }}, {{ tool.api_url | tojson }}, {{ tool.headers | tojson }}, {{ tool.auth_query | tojson }}, _query, _body)
 
 
+{% endfor %}
 if __name__ == "__main__":
     mcp.run()
