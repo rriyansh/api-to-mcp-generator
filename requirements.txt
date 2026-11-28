@@ -1,6 +1,7 @@
-# Requirement Libary
 mcp<2
+pydantic
 jinja2
 requests
-streamlit
+streamlit>=1.40
+pandas
 python-dotenv
