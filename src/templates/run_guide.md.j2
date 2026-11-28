@@ -1,0 +1,56 @@
+# {{ server_name }}
+
+This folder holds an MCP server created with api-to-mcp-generator.
+
+## Tools in this server
+
+{% for tool in tools %}
+- `{{ tool.name }}` ({{ tool.http_method }} {{ tool.api_url }}): {{ tool.description }}
+{% endfor %}
+
+## Install
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+On Windows activate with `venv\Scripts\activate` and use `python` instead of `python3`.
+
+{% if env_vars %}
+## Add your secrets
+
+Copy `.env.example` to `.env` and replace the placeholder values. Keep `.env` next to `server.py`. Never share it and never commit it to Git.
+
+```bash
+cp .env.example .env
+```
+
+Variables needed:
+
+{% for name in env_vars %}
+- `{{ name }}`
+{% endfor %}
+
+{% endif %}
+## Run
+
+```bash
+python server.py
+```
+
+The server prints nothing and waits for an MCP client. That is normal. Press Ctrl+C to stop it.
+
+## Test with MCP Inspector
+
+```bash
+npx @modelcontextprotocol/inspector python server.py
+```
+
+## Connect to Claude Desktop
+
+1. Open Claude Desktop, then Settings, Developer, Edit Config.
+2. Merge the `mcpServers` block from `claude_desktop_config.json` into that file.
+3. Make sure `command` points to the Python inside your `venv` and `args` points to the full path of `server.py`.
+4. Fully quit and reopen Claude Desktop.
